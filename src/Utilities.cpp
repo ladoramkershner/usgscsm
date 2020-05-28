@@ -1,5 +1,10 @@
 #include "Utilities.h"
+
+#include <cmath>
 #include <Error.h>
+#include <stack>
+#include <utility>
+#include <stdexcept>
 
 using json = nlohmann::json;
 
@@ -87,10 +92,10 @@ void computeDistortedFocalPlaneCoordinates(
   double t1 = detLine - lineOrigin - iTransL[0];
   double t2 = detSample - sampleOrigin - iTransS[0];
   double determinant = m11 * m22 - m12 * m21;
-  double p11 = m11 / determinant;
+  double p11 = m22 / determinant;
   double p12 = -m12 / determinant;
   double p21 = -m21 / determinant;
-  double p22 = m22 / determinant;
+  double p22 = m11 / determinant;
 
   distortedX = p11 * t1 + p12 * t2;
   distortedY = p21 * t1 + p22 * t2;
@@ -272,6 +277,265 @@ void lagrangeInterp(
   }
 }
 
+double brentRoot(
+  double lowerBound,
+  double upperBound,
+  std::function<double(double)> func,
+  double epsilon) {
+    double counterPoint = lowerBound;
+    double currentPoint = upperBound;
+    double counterFunc = func(counterPoint);
+    double currentFunc = func(currentPoint);
+    if (counterFunc * currentFunc > 0.0) {
+      throw std::invalid_argument("Function values at the boundaries have the same sign [brentRoot].");
+    }
+    if (fabs(counterFunc) < fabs(currentFunc)) {
+      std::swap(counterPoint, currentPoint);
+      std::swap(counterFunc, currentFunc);
+    }
+
+    double previousPoint = counterPoint;
+    double previousFunc = counterFunc;
+    double evenOlderPoint = previousPoint;
+    double nextPoint;
+    double nextFunc;
+    int iteration = 0;
+    bool bisected = true;
+
+    do {
+      // Inverse quadratic interpolation
+      if (counterFunc != previousFunc && counterFunc != currentFunc && currentFunc != previousFunc) {
+        nextPoint = (counterPoint * currentFunc * previousFunc) / ((counterFunc - currentFunc) * (counterFunc - previousFunc));
+        nextPoint += (currentPoint * counterFunc * previousFunc) / ((currentFunc - counterFunc) * (currentFunc - previousFunc));
+        nextPoint += (previousPoint * currentFunc * counterFunc) / ((previousFunc - counterFunc) * (previousFunc - currentFunc));
+      }
+      // Secant method
+      else {
+        nextPoint = currentPoint - currentFunc * (currentPoint - counterPoint) / (currentFunc - counterFunc);
+      }
+
+      // Bisection method
+      if (((currentPoint - nextPoint) * (nextPoint - (3 * counterPoint + currentPoint) / 4) < 0) ||
+          (bisected && fabs(nextPoint - currentPoint) >= fabs(currentPoint - previousPoint) / 2) ||
+          (!bisected && fabs(nextPoint - currentPoint) >= fabs(previousPoint - evenOlderPoint) / 2) ||
+          (bisected && fabs(currentPoint - previousPoint) < epsilon) ||
+          (!bisected && fabs(previousPoint - evenOlderPoint) < epsilon)) {
+        nextPoint = (currentPoint + counterPoint) / 2;
+        bisected = true;
+      }
+      else {
+        bisected = false;
+      }
+
+      // Setup for next iteration
+      evenOlderPoint = previousPoint;
+      previousPoint = currentPoint;
+      previousFunc = currentFunc;
+      nextFunc = func(nextPoint);
+      if (counterFunc * nextFunc < 0) {
+        currentPoint = nextPoint;
+        currentFunc = nextFunc;
+      }
+      else {
+        counterPoint = nextPoint;
+        counterFunc = nextFunc;
+      }
+    } while (++iteration < 30 && fabs(counterPoint - currentPoint) > epsilon);
+
+    return nextPoint;
+  }
+
+double secantRoot(double lowerBound, double upperBound, std::function<double(double)> func,
+                  double epsilon, int maxIters) {
+  bool found = false;
+
+  double x0 = lowerBound;
+  double x1 = upperBound;
+  double f0 = func(x0);
+  double f1 = func(x1);
+  double diff = 0;
+  double x2 = 0;
+  double f2 = 0;
+
+  std::cout << "f0, f1: " << f0 << ", " << f1 << std::endl;
+
+  // Make sure we bound the root (f = 0.0)
+  if (f0 * f1 > 0.0) {
+    throw std::invalid_argument("Function values at the boundaries have the same sign [secantRoot].");
+  }
+
+  // Order the bounds
+  if (f1 < f0) {
+    std::swap(x0, x1);
+    std::swap(f0, f1);
+  }
+
+  for (int iteration=0; iteration < maxIters; iteration++) {
+    x2 = x1 - f1 * (x1 - x0)/(f1 - f0);
+    f2 = func(x2);
+
+    // Update the bounds for the next iteration
+    if (f2 < 0.0) {
+      diff = x1 - x2;
+      x1 = x2;
+      f1 = f2;
+    }
+    else {
+      diff = x0 - x2;
+      x0 = x2;
+      f0 = f2;
+    }
+
+    // Check to see if we're done
+    if ((fabs(diff) <= epsilon) || (f2 == 0.0) ) {
+      found = true;
+      break;
+    }
+  }
+
+  if (found) {
+   return x2;
+  }
+  else {
+    throw csm::Error(
+    csm::Error::UNKNOWN_ERROR,
+    "Could not find a root of the function using the secant method",
+    "secantRoot");
+  }
+}
+
+double computeEllipsoidElevation(
+  double x,
+  double y,
+  double z,
+  double semiMajor,
+  double semiMinor,
+  double desired_precision,
+  double* achieved_precision)
+{
+  // Compute elevation given xyz
+  // Requires semi-major-axis and eccentricity-square
+  const int MKTR = 10;
+  double ecc_sqr = 1.0 - semiMinor * semiMinor / semiMajor / semiMajor;
+  double ep2 = 1.0 - ecc_sqr;
+  double d2 = x * x + y * y;
+  double d = sqrt(d2);
+  double h = 0.0;
+  int ktr = 0;
+  double hPrev, r;
+
+  // Suited for points near equator
+  if (d >= z)
+  {
+     double tt, zz, n;
+     double tanPhi = z / d;
+     do
+     {
+        hPrev = h;
+        tt = tanPhi * tanPhi;
+        r = semiMajor / sqrt(1.0 + ep2 * tt);
+        zz = z + r * ecc_sqr * tanPhi;
+        n = r * sqrt(1.0 + tt);
+        h = sqrt(d2 + zz * zz) - n;
+        tanPhi = zz / d;
+        ktr++;
+     } while (MKTR > ktr && fabs(h - hPrev) > desired_precision);
+  }
+
+  // Suited for points near the poles
+  else
+  {
+     double cc, dd, nn;
+     double cotPhi = d / z;
+     do
+     {
+        hPrev = h;
+        cc = cotPhi * cotPhi;
+        r = semiMajor / sqrt(ep2 + cc);
+        dd = d - r * ecc_sqr * cotPhi;
+        nn = r * sqrt(1.0 + cc) * ep2;
+        h = sqrt(dd * dd + z * z) - nn;
+        cotPhi = dd / z;
+        ktr++;
+     } while (MKTR > ktr && fabs(h - hPrev) > desired_precision);
+  }
+
+  if (achieved_precision) {
+    *achieved_precision = fabs(h - hPrev);
+  }
+
+  return h;
+}
+
+
+csm::EcefVector operator*(double scalar, const csm::EcefVector &vec)
+{
+  return csm::EcefVector(
+      scalar * vec.x,
+      scalar * vec.y,
+      scalar * vec.z);
+}
+
+csm::EcefVector operator*(const csm::EcefVector &vec, double scalar)
+{
+  return scalar * vec;
+}
+
+csm::EcefVector operator/(const csm::EcefVector &vec, double scalar)
+{
+  return 1.0 / scalar * vec;
+}
+
+csm::EcefVector operator+(const csm::EcefVector &vec1, const csm::EcefVector &vec2)
+{
+  return csm::EcefVector(
+      vec1.x + vec2.x,
+      vec1.y + vec2.y,
+      vec1.z + vec2.z);
+}
+
+csm::EcefVector operator-(const csm::EcefVector &vec1, const csm::EcefVector &vec2)
+{
+  return csm::EcefVector(
+      vec1.x - vec2.x,
+      vec1.y - vec2.y,
+      vec1.z - vec2.z);
+}
+
+double dot(const csm::EcefVector &vec1, const csm::EcefVector &vec2)
+{
+  return vec1.x * vec2.x + vec1.y * vec2.y + vec1.z * vec2.z;
+}
+
+csm::EcefVector cross(const csm::EcefVector &vec1, const csm::EcefVector &vec2)
+{
+  return csm::EcefVector(
+      vec1.y * vec2.z - vec1.z * vec2.y,
+      vec1.z * vec2.x - vec1.x * vec2.z,
+      vec1.x * vec2.y - vec1.y * vec2.x);
+}
+
+double norm(const csm::EcefVector &vec)
+{
+  return sqrt(vec.x * vec.x + vec.y * vec.y + vec.z * vec.z);
+}
+
+csm::EcefVector normalized(const csm::EcefVector &vec)
+{
+  return vec / norm(vec);
+}
+
+csm::EcefVector projection(const csm::EcefVector &vec1, const csm::EcefVector &vec2)
+{
+  return dot(vec1, vec2) / dot(vec2, vec2) * vec2;
+}
+
+csm::EcefVector rejection(const csm::EcefVector &vec1, const csm::EcefVector &vec2)
+{
+  return vec1 - projection(vec1, vec2);
+}
+
+
 // convert a measurement
 double metric_conversion(double val, std::string from, std::string to) {
     json typemap = {
@@ -434,6 +698,23 @@ double getCenterTime(json isd, csm::WarningList *list) {
           csm::Warning::DATA_NOT_AVAILABLE,
           "Could not parse the center image time.",
           "Utilities::getCenterTime()"));
+    }
+  }
+  return time;
+}
+
+double getEndingTime(json isd, csm::WarningList *list) {
+  double time = 0.0;
+  try {
+    time = isd.at("ending_ephemeris_time");
+  }
+  catch (...) {
+    if (list) {
+      list->push_back(
+        csm::Warning(
+          csm::Warning::DATA_NOT_AVAILABLE,
+          "Could not parse the ending image time.",
+          "Utilities::getEndingTime()"));
     }
   }
   return time;
@@ -727,6 +1008,7 @@ double getSemiMajorRadius(json isd, csm::WarningList *list) {
   return radius;
 }
 
+
 double getSemiMinorRadius(json isd, csm::WarningList *list) {
   double radius = 0.0;
   try {
@@ -747,8 +1029,9 @@ double getSemiMinorRadius(json isd, csm::WarningList *list) {
   return radius;
 }
 
-// Gets the type of distortion model from the isd. If none is specified defaults
-// to transverse
+
+// Converts the distortion model name from the ISD (string) to the enumeration
+// type. Defaults to transverse
 DistortionType getDistortionModel(json isd, csm::WarningList *list) {
   try {
     json distoriton_subset = isd.at("optical_distortion");
@@ -762,6 +1045,15 @@ DistortionType getDistortionModel(json isd, csm::WarningList *list) {
     }
     else if (distortion.compare("radial") == 0) {
       return DistortionType::RADIAL;
+    }
+    else if (distortion.compare("kaguyalism") == 0) {
+      return DistortionType::KAGUYALISM;
+    }
+    else if (distortion.compare("dawnfc") == 0) {
+      return DistortionType::DAWNFC;
+    }
+    else if (distortion.compare("lrolrocnac") == 0) {
+      return DistortionType::LROLROCNAC;
     }
   }
   catch (...) {
@@ -807,6 +1099,8 @@ std::vector<double> getDistortionCoeffs(json isd, csm::WarningList *list) {
               "Utilities::getDistortion()"));
         }
         coefficients = std::vector<double>(20, 0.0);
+        coefficients[1] = 1.0;
+        coefficients[12] = 1.0;
       }
     }
     break;
@@ -827,6 +1121,70 @@ std::vector<double> getDistortionCoeffs(json isd, csm::WarningList *list) {
         coefficients = std::vector<double>(3, 0.0);
       }
     }
+    break;
+    case DistortionType::KAGUYALISM: {
+      try {
+
+        std::vector<double> coefficientsX = isd.at("optical_distortion").at("kaguyalism").at("x").get<std::vector<double>>();
+        std::vector<double> coefficientsY = isd.at("optical_distortion").at("kaguyalism").at("y").get<std::vector<double>>();
+        double boresightX = isd.at("optical_distortion").at("kaguyalism").at("boresight_x").get<double>();
+        double boresightY = isd.at("optical_distortion").at("kaguyalism").at("boresight_y").get<double>();
+
+        coefficientsX.resize(4, 0.0);
+        coefficientsY.resize(4, 0.0);
+        coefficientsX.insert(coefficientsX.begin(), boresightX);
+        coefficientsY.insert(coefficientsY.begin(), boresightY);
+        coefficientsX.insert(coefficientsX.end(), coefficientsY.begin(), coefficientsY.end());
+
+        return coefficientsX;
+      }
+      catch (...) {
+        if (list) {
+          list->push_back(
+            csm::Warning(
+              csm::Warning::DATA_NOT_AVAILABLE,
+              "Could not parse a set of Kaguya LISM distortion model coefficients.",
+              "Utilities::getDistortion()"));
+        }
+        coefficients = std::vector<double>(8, 0.0);
+      }
+    }
+    break;
+    case DistortionType::DAWNFC: {
+      try {
+        coefficients = isd.at("optical_distortion").at("dawnfc").at("coefficients").get<std::vector<double>>();
+
+        return coefficients;
+      }
+      catch (...) {
+        if (list) {
+          list->push_back(
+            csm::Warning(
+              csm::Warning::DATA_NOT_AVAILABLE,
+              "Could not parse the dawn radial distortion model coefficients.",
+              "Utilities::getDistortion()"));
+        }
+        coefficients = std::vector<double>(1, 0.0);
+      }
+    }
+    break;
+    case DistortionType::LROLROCNAC: {
+      try {
+        coefficients = isd.at("optical_distortion").at("lrolrocnac").at("coefficients").get<std::vector<double>>();
+        return coefficients;
+      }
+      catch (...) {
+        if (list) {
+          list->push_back(
+            csm::Warning(
+              csm::Warning::DATA_NOT_AVAILABLE,
+              "Could not parse the lrolrocnac distortion model coefficients.",
+              "Utilities::getDistortion()"));
+        }
+        coefficients = std::vector<double>(1, 0.0);
+      }
+    }
+    break;
   }
   if (list) {
     list->push_back(
@@ -860,6 +1218,30 @@ std::vector<double> getSunPositions(json isd, csm::WarningList *list) {
     }
   }
   return positions;
+}
+
+std::vector<double> getSunVelocities(json isd, csm::WarningList *list) {
+  std::vector<double> velocities;
+  try {
+    json jayson = isd.at("sun_position");
+    json unit = jayson.at("unit");
+    for (auto& location : jayson.at("velocities")) {
+      velocities.push_back(metric_conversion(location[0].get<double>(), unit.get<std::string>()));
+      velocities.push_back(metric_conversion(location[1].get<double>(), unit.get<std::string>()));
+      velocities.push_back(metric_conversion(location[2].get<double>(), unit.get<std::string>()));
+    }
+  }
+  catch (...) {
+    std::cout<<"Could not parse sun velocity"<<std::endl;
+    if (list) {
+      list->push_back(
+        csm::Warning(
+          csm::Warning::DATA_NOT_AVAILABLE,
+          "Could not parse the sun velocities.",
+          "Utilities::getSunVelocities()"));
+    }
+  }
+  return velocities;
 }
 
 std::vector<double> getSensorPositions(json isd, csm::WarningList *list) {
@@ -928,4 +1310,111 @@ std::vector<double> getSensorOrientations(json isd, csm::WarningList *list) {
     }
   }
   return quaternions;
+}
+
+double getExposureDuration(nlohmann::json isd, csm::WarningList *list) {
+  double duration;
+  try {
+    duration = isd.at("line_exposure_duration");
+  }
+  catch (...) {
+    if (list) {
+      list->push_back(
+        csm::Warning(
+          csm::Warning::DATA_NOT_AVAILABLE,
+          "Could not parse the line exposure duration.",
+          "Utilities::getExposureDuration()"));
+    }
+  }
+  return duration;
+}
+
+double getScaledPixelWidth(nlohmann::json isd, csm::WarningList *list) {
+  double width;
+  try {
+    width = isd.at("scaled_pixel_width");
+  }
+  catch (...) {
+    if (list) {
+      list->push_back(
+        csm::Warning(
+          csm::Warning::DATA_NOT_AVAILABLE,
+          "Could not parse the scaled pixel width.",
+          "Utilities::getScaledPixelWidth()"));
+    }
+  }
+  return width;
+}
+
+std::string getLookDirection(nlohmann::json isd, csm::WarningList *list) {
+  std::string lookDirection = "";
+  try {
+    lookDirection = isd.at("look_direction");
+  }
+  catch (...) {
+    if (list) {
+      list->push_back(
+        csm::Warning(
+          csm::Warning::DATA_NOT_AVAILABLE,
+          "Could not parse the scaled pixel width.",
+          "Utilities::getScaledPixelWidth()"));
+    }
+  }
+  return lookDirection;
+}
+
+std::vector<double> getScaleConversionTimes(nlohmann::json isd, csm::WarningList *list) {
+  std::vector<double> time;
+  try {
+    time = isd.at("range_conversion_times").get<std::vector<double>>();
+  }
+  catch (...) {
+    if (list) {
+      list->push_back(
+        csm::Warning(
+          csm::Warning::DATA_NOT_AVAILABLE,
+          "Could not parse the range conversion times.",
+          "Utilities::getScaleConversionTimes()"));
+    }
+  }
+  return time;
+}
+
+std::vector<double> getScaleConversionCoefficients(nlohmann::json isd, csm::WarningList *list) {
+  std::vector<double> coefficients;
+  try {
+   for (auto& location : isd.at("range_conversion_coefficients")){
+     coefficients.push_back(location[0]);
+     coefficients.push_back(location[1]);
+     coefficients.push_back(location[2]);
+     coefficients.push_back(location[3]);
+    }
+  }
+  catch (...) {
+    if (list) {
+      list->push_back(
+        csm::Warning(
+          csm::Warning::DATA_NOT_AVAILABLE,
+          "Could not parse the range conversion coefficients.",
+          "Utilities::getScaleConversionCoefficients()"));
+    }
+  }
+  return coefficients;
+}
+
+double getWavelength(json isd, csm::WarningList *list) {
+  double wavelength = 0.0;
+  try {
+    wavelength = isd.at("wavelength");
+  }
+  catch (...) {
+    if (list) {
+      list->push_back(
+        csm::Warning(
+          csm::Warning::DATA_NOT_AVAILABLE,
+          "Could not parse the wavelength.",
+          "Utilities::getWavelength()"));
+    }
+  }
+  return wavelength;
 }

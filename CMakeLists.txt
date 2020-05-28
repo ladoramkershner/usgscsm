@@ -1,9 +1,17 @@
 cmake_minimum_required(VERSION 3.10)
-project(usgscsm VERSION 0.0.1 DESCRIPTION "usgscsm library")
+project(usgscsm VERSION 1.4.0 DESCRIPTION "usgscsm library")
 
 include(GNUInstallDirs)
 
 set(CMAKE_CXX_STANDARD 11)
+
+# Set a default build type if none was specified
+set(default_build_type "Release")
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  message(STATUS "Setting build type to '${default_build_type}' as none was specified.")
+  set(CMAKE_BUILD_TYPE "${default_build_type}" CACHE
+      STRING "Choose the type of build." FORCE)
+endif()
 
 # Optional build or link against CSM
 option (BUILD_CSM "Build the CSM library" ON)
@@ -25,6 +33,7 @@ add_library(usgscsm SHARED
             src/UsgsAstroPlugin.cpp
             src/UsgsAstroFrameSensorModel.cpp
             src/UsgsAstroLsSensorModel.cpp
+            src/UsgsAstroSarSensorModel.cpp
             src/Distortion.cpp
 	    src/Utilities.cpp)
 

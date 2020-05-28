@@ -8,9 +8,10 @@
 #include <gtest/gtest.h>
 
 #include <math.h>
+#include <stdexcept>
+#include <functional>
 
 using json = nlohmann::json;
-
 
 TEST(UtilitiesTests, calculateRotationMatrixFromEuler) {
    double euler[3], rotationMatrix[9];
@@ -81,6 +82,22 @@ TEST(UtilitiesTests, computeDistortedFocalPlaneCoordinatesSumming) {
    EXPECT_DOUBLE_EQ(undistortedFocalPlaneY, 0);
 }
 
+TEST(UtilitiesTests, computeDistortedFocalPlaneCoordinatesAffine) {
+   double iTransS[] = {-10.0, 0.0, 0.1};
+   double iTransL[] = {10.0, -0.1, 0.0};
+   double undistortedFocalPlaneX, undistortedFocalPlaneY;
+   computeDistortedFocalPlaneCoordinates(
+         11.0, -9.0,
+         0.0, 0.0,
+         1.0, 1.0,
+         0.0, 0.0,
+         iTransS, iTransL,
+         undistortedFocalPlaneX, undistortedFocalPlaneY);
+   EXPECT_NEAR(undistortedFocalPlaneX, -10.0, 1e-12);
+   EXPECT_NEAR(undistortedFocalPlaneY, 10.0, 1e-12);
+}
+
+
 TEST(UtilitiesTests, computeDistortedFocalPlaneCoordinatesStart) {
    double iTransS[] = {0.0, 0.0, 10.0};
    double iTransL[] = {0.0, 10.0, 0.0};
@@ -139,6 +156,21 @@ TEST(UtilitiesTests, computePixelStart) {
          line, sample);
    EXPECT_DOUBLE_EQ(line, 2.0);
    EXPECT_DOUBLE_EQ(sample, 4.0);
+}
+
+TEST(UtilitiesTests, computePixelStartSumming) {
+   double iTransS[] = {0.0, 0.0, 10.0};
+   double iTransL[] = {0.0, 10.0, 0.0};
+   double line, sample;
+   computePixel(
+         -0.5, -0.2,
+         8.0, 8.0,
+         2.0, 4.0,
+         2.0, 1.0,
+         iTransS, iTransL,
+         line, sample);
+   EXPECT_DOUBLE_EQ(line, 0.5);
+   EXPECT_DOUBLE_EQ(sample, 2.0);
 }
 
 TEST(UtilitiesTests, createCameraLookVector) {
@@ -306,4 +338,157 @@ TEST(UtilitiesTests, lagrangeInterp2D) {
                     time, vectorLength, order, &outputValue[0]);
   EXPECT_DOUBLE_EQ(outputValue[0], 0.5);
   EXPECT_DOUBLE_EQ(outputValue[1], 1.5);
+}
+
+TEST(UtilitiesTests, brentRoot) {
+  std::function<double(double)> testPoly = [](double x) {
+    return (x - 2) * (x + 1) * (x + 7);
+  };
+
+  EXPECT_NEAR(brentRoot(1.0, 3.0, testPoly, 1e-10), 2.0, 1e-10);
+  EXPECT_NEAR(brentRoot(0.0, -3.0, testPoly, 1e-10), -1.0, 1e-10);
+  EXPECT_THROW(brentRoot(-3.0, 3.0, testPoly), std::invalid_argument);
+}
+
+TEST(UtilitiesTests, secantRoot) {
+  std::function<double(double)> testPoly = [](double x) {
+    return (x - 2) * (x + 1) * (x + 7);
+  };
+  EXPECT_NEAR(secantRoot(1.0, 3.0, testPoly, 1e-10), 2.0, 1e-10);
+  EXPECT_NEAR(secantRoot(0.0, -3.0, testPoly, 1e-10), -1.0, 1e-10);
+  EXPECT_THROW(secantRoot(-1000.0, 1000.0, testPoly), csm::Error);
+}
+
+TEST(UtilitiesTests, vectorProduct) {
+  csm::EcefVector vec(1.0, 2.0, 3.0);
+  csm::EcefVector leftVec = 2.0 * vec;
+  csm::EcefVector rightVec = vec * 2;
+  EXPECT_DOUBLE_EQ(leftVec.x, 2.0);
+  EXPECT_DOUBLE_EQ(leftVec.y, 4.0);
+  EXPECT_DOUBLE_EQ(leftVec.z, 6.0);
+  EXPECT_DOUBLE_EQ(rightVec.x, 2.0);
+  EXPECT_DOUBLE_EQ(rightVec.y, 4.0);
+  EXPECT_DOUBLE_EQ(rightVec.z, 6.0);
+}
+
+TEST(UtilitiesTests, vectorDivision) {
+  csm::EcefVector vec(2.0, 4.0, 6.0);
+  csm::EcefVector divVec = vec / 2.0;
+  EXPECT_DOUBLE_EQ(divVec.x, 1.0);
+  EXPECT_DOUBLE_EQ(divVec.y, 2.0);
+  EXPECT_DOUBLE_EQ(divVec.z, 3.0);
+}
+
+TEST(UtilitiesTests, vectorAddition) {
+  csm::EcefVector vec1(2.0, 4.0, 6.0);
+  csm::EcefVector vec2(1.0, 2.0, 3.0);
+  csm::EcefVector sumVec = vec1 + vec2;
+  EXPECT_DOUBLE_EQ(sumVec.x, 3.0);
+  EXPECT_DOUBLE_EQ(sumVec.y, 6.0);
+  EXPECT_DOUBLE_EQ(sumVec.z, 9.0);
+}
+
+TEST(UtilitiesTests, vectorSubtraction) {
+  csm::EcefVector vec1(2.0, 4.0, 6.0);
+  csm::EcefVector vec2(1.0, 2.0, 3.0);
+  csm::EcefVector diffVec = vec1 - vec2;
+  EXPECT_DOUBLE_EQ(diffVec.x, 1.0);
+  EXPECT_DOUBLE_EQ(diffVec.y, 2.0);
+  EXPECT_DOUBLE_EQ(diffVec.z, 3.0);
+}
+
+TEST(UtilitiesTests, vectorDot) {
+  csm::EcefVector unitX(1.0, 0.0, 0.0);
+  csm::EcefVector unitY(0.0, 1.0, 0.0);
+  csm::EcefVector unitZ(0.0, 0.0, 1.0);
+  csm::EcefVector testVec(1.0, 2.0, 3.0);
+  EXPECT_DOUBLE_EQ(dot(testVec, unitX), 1.0);
+  EXPECT_DOUBLE_EQ(dot(testVec, unitY), 2.0);
+  EXPECT_DOUBLE_EQ(dot(testVec, unitZ), 3.0);
+}
+
+TEST(UtilitiesTests, vectorCross) {
+  csm::EcefVector unitX(1.0, 0.0, 0.0);
+  csm::EcefVector unitY(0.0, 1.0, 0.0);
+  csm::EcefVector unitZ(0.0, 0.0, 1.0);
+
+  csm::EcefVector unitXY = cross(unitX, unitY);
+  EXPECT_DOUBLE_EQ(unitXY.x, 0.0);
+  EXPECT_DOUBLE_EQ(unitXY.y, 0.0);
+  EXPECT_DOUBLE_EQ(unitXY.z, 1.0);
+
+
+  csm::EcefVector unitYX = cross(unitY, unitX);
+  EXPECT_DOUBLE_EQ(unitYX.x, 0.0);
+  EXPECT_DOUBLE_EQ(unitYX.y, 0.0);
+  EXPECT_DOUBLE_EQ(unitYX.z, -1.0);
+
+  csm::EcefVector unitXZ = cross(unitX, unitZ);
+  EXPECT_DOUBLE_EQ(unitXZ.x, 0.0);
+  EXPECT_DOUBLE_EQ(unitXZ.y, -1.0);
+  EXPECT_DOUBLE_EQ(unitXZ.z, 0.0);
+
+
+  csm::EcefVector unitZX = cross(unitZ, unitX);
+  EXPECT_DOUBLE_EQ(unitZX.x, 0.0);
+  EXPECT_DOUBLE_EQ(unitZX.y, 1.0);
+  EXPECT_DOUBLE_EQ(unitZX.z, 0.0);
+
+  csm::EcefVector unitYZ = cross(unitY, unitZ);
+  EXPECT_DOUBLE_EQ(unitYZ.x, 1.0);
+  EXPECT_DOUBLE_EQ(unitYZ.y, 0.0);
+  EXPECT_DOUBLE_EQ(unitYZ.z, 0.0);
+
+
+  csm::EcefVector unitZY = cross(unitZ, unitY);
+  EXPECT_DOUBLE_EQ(unitZY.x, -1.0);
+  EXPECT_DOUBLE_EQ(unitZY.y, 0.0);
+  EXPECT_DOUBLE_EQ(unitZY.z, 0.0);
+}
+
+TEST(UtilitiesTests, vectorNorm) {
+  csm::EcefVector testVec(1.0, 2.0, 3.0);
+  EXPECT_DOUBLE_EQ(norm(testVec), sqrt(14.0));
+  csm::EcefVector normVec = normalized(testVec);
+  EXPECT_DOUBLE_EQ(normVec.x, 1.0 / sqrt(14.0));
+  EXPECT_DOUBLE_EQ(normVec.y, 2.0 / sqrt(14.0));
+  EXPECT_DOUBLE_EQ(normVec.z, 3.0 / sqrt(14.0));
+}
+
+TEST(UtilitiesTests, vectorProjection) {
+  csm::EcefVector unitX(1.0, 0.0, 0.0);
+  csm::EcefVector unitY(0.0, 1.0, 0.0);
+  csm::EcefVector unitZ(0.0, 0.0, 1.0);
+
+  csm::EcefVector testVec(1.0, 2.0, 3.0);
+
+  csm::EcefVector projX = projection(testVec, unitX);
+  EXPECT_DOUBLE_EQ(projX.x, 1.0);
+  EXPECT_DOUBLE_EQ(projX.y, 0.0);
+  EXPECT_DOUBLE_EQ(projX.z, 0.0);
+
+  csm::EcefVector rejectX = rejection(testVec, unitX);
+  EXPECT_DOUBLE_EQ(rejectX.x, 0.0);
+  EXPECT_DOUBLE_EQ(rejectX.y, 2.0);
+  EXPECT_DOUBLE_EQ(rejectX.z, 3.0);
+
+  csm::EcefVector projY = projection(testVec, unitY);
+  EXPECT_DOUBLE_EQ(projY.x, 0.0);
+  EXPECT_DOUBLE_EQ(projY.y, 2.0);
+  EXPECT_DOUBLE_EQ(projY.z, 0.0);
+
+  csm::EcefVector rejectY = rejection(testVec, unitY);
+  EXPECT_DOUBLE_EQ(rejectY.x, 1.0);
+  EXPECT_DOUBLE_EQ(rejectY.y, 0.0);
+  EXPECT_DOUBLE_EQ(rejectY.z, 3.0);
+
+  csm::EcefVector projZ = projection(testVec, unitZ);
+  EXPECT_DOUBLE_EQ(projZ.x, 0.0);
+  EXPECT_DOUBLE_EQ(projZ.y, 0.0);
+  EXPECT_DOUBLE_EQ(projZ.z, 3.0);
+
+  csm::EcefVector rejectZ = rejection(testVec, unitZ);
+  EXPECT_DOUBLE_EQ(rejectZ.x, 1.0);
+  EXPECT_DOUBLE_EQ(rejectZ.y, 2.0);
+  EXPECT_DOUBLE_EQ(rejectZ.z, 0.0);
 }

@@ -369,18 +369,7 @@ csm::EcefVector UsgsAstroFrameSensorModel::getIlluminationDirection(const csm::E
 double UsgsAstroFrameSensorModel::getImageTime(const csm::ImageCoord &imagePt) const {
   MESSAGE_LOG(this->m_logger, "Accessing image time for image point {}, {}",
               imagePt.line, imagePt.samp);
-  // check if the image point is in range
-  if (imagePt.samp >= m_startingDetectorSample &&
-      imagePt.samp <= (m_startingDetectorSample + m_nSamples) &&
-      imagePt.line >= m_startingDetectorSample &&
-      imagePt.line <= (m_startingDetectorLine + m_nLines)) {
     return m_ephemerisTime;
-  }
-  else {
-    throw csm::Error(csm::Error::BOUNDS,
-                     "Image Coordinate out of Bounds",
-                     "UsgsAstroFrameSensorModel::getImageTime");
-  }
 }
 
 
@@ -500,7 +489,13 @@ csm::RasterGM::SensorPartials UsgsAstroFrameSensorModel::computeSensorPartials(i
                                with point: {}, {}, index: {}, and desiredPrecision: {}",
                                groundPt.x, groundPt.y, groundPt.z, imagePt.line, imagePt.samp,
                                index, desiredPrecision);
-  const double delta = 1.0;
+  double delta = 1.0;
+  // The rotation parameters will usually be small (<1),
+  // so a delta of 1.0 is too small.
+  // Rotation parameters are indices 3-6
+  if (index > 2 && index < 7) {
+    delta = 0.01;
+  }
   // Update the parameter
   std::vector<double>adj(NUM_PARAMETERS, 0.0);
   adj[index] = delta;
@@ -557,50 +552,40 @@ std::vector<double> UsgsAstroFrameSensorModel::computeGroundPartials(const csm::
                                                                      &groundPt) const {
   MESSAGE_LOG(this->m_logger, "Computing ground partials for ground point {}, {}, {}",
                                groundPt.x, groundPt.y, groundPt.z);
-  // Partials of line, sample wrt X, Y, Z
-  // Uses collinearity equations
+  // Partial of line, sample wrt X, Y, Z
+  double x = groundPt.x;
+  double y = groundPt.y;
+  double z = groundPt.z;
+
+  csm::ImageCoord ipB = groundToImage(groundPt);
+  csm::EcefCoord nextPoint = imageToGround(csm::ImageCoord(ipB.line + 1, ipB.samp + 1));
+  double dx = nextPoint.x - x;
+  double dy = nextPoint.y - y;
+  double dz = nextPoint.z - z;
+  double pixelGroundSize = sqrt((dx*dx + dy*dy + dz*dz) / 2.0);
+
+  // If the ground size is too small, try the opposite direction
+  if (pixelGroundSize < 1e-10) {
+    nextPoint = imageToGround(csm::ImageCoord(ipB.line - 1, ipB.samp - 1));
+    dx = nextPoint.x - x;
+    dy = nextPoint.y - y;
+    dz = nextPoint.z - z;
+    pixelGroundSize = sqrt((dx*dx + dy*dy + dz*dz) / 2.0);
+  }
+
+  csm::ImageCoord ipX = groundToImage(csm::EcefCoord(x + pixelGroundSize, y, z));
+  csm::ImageCoord ipY = groundToImage(csm::EcefCoord(x, y + pixelGroundSize, z));
+  csm::ImageCoord ipZ = groundToImage(csm::EcefCoord(x, y, z + pixelGroundSize));
+
   std::vector<double> partials(6, 0.0);
+  partials[0] = (ipX.line - ipB.line) / pixelGroundSize;
+  partials[3] = (ipX.samp - ipB.samp) / pixelGroundSize;
+  partials[1] = (ipY.line - ipB.line) / pixelGroundSize;
+  partials[4] = (ipY.samp - ipB.samp) / pixelGroundSize;
+  partials[2] = (ipZ.line - ipB.line) / pixelGroundSize;
+  partials[5] = (ipZ.samp - ipB.samp) / pixelGroundSize;
 
-  double m[3][3];
-  calcRotationMatrix(m, m_noAdjustments);
-
-  double xo, yo, zo;
-  xo = groundPt.x - m_currentParameterValue[0];
-  yo = groundPt.y - m_currentParameterValue[1];
-  zo = groundPt.z - m_currentParameterValue[2];
-
-  double u, v, w;
-  u = m[0][0] * xo + m[0][1] * yo + m[0][2] * zo;
-  v = m[1][0] * xo + m[1][1] * yo + m[1][2] * zo;
-  w = m[2][0] * xo + m[2][1] * yo + m[2][2] * zo;
-
-  double fdw, udw, vdw;
-  fdw = m_focalLength / w;
-  udw = u / w;
-  vdw = v / w;
-
-  double upx, vpx, wpx;
-  upx = m[0][0];
-  vpx = m[1][0];
-  wpx = m[2][0];
-  partials[0] = -fdw * ( upx - udw * wpx );
-  partials[3] = -fdw * ( vpx - vdw * wpx );
-
-  double upy, vpy, wpy;
-  upy = m[0][1];
-  vpy = m[1][1];
-  wpy = m[2][1];
-  partials[1] = -fdw * ( upy - udw * wpy );
-  partials[4] = -fdw * ( vpy - vdw * wpy );
-
-  double upz, vpz, wpz;
-  upz = m[0][2];
-  vpz = m[1][2];
-  wpz = m[2][2];
-  partials[2] = -fdw * ( upz - udw * wpz );
-  partials[5] = -fdw * ( vpz - vdw * wpz );
-
-  MESSAGE_LOG(this->m_logger, "Computing ground partials result line: {}, sample: {}, wrt: {} and x: {}, y: {}, z: {}",
+  MESSAGE_LOG(this->m_logger, "Computing ground partials results:\nLine: {}, {}, {}\nSample: {}, {}, {}",
                                partials[0], partials[1], partials[2], partials[3], partials[4], partials[5]);
 
   return partials;
@@ -693,7 +678,19 @@ std::string UsgsAstroFrameSensorModel::getSensorMode() const {
 
 std::string UsgsAstroFrameSensorModel::getReferenceDateAndTime() const {
   MESSAGE_LOG(this->m_logger, "Accessing reference data and time");
-  return "";
+  csm::EcefCoord referencePointGround = UsgsAstroFrameSensorModel::getReferencePoint();
+  csm::ImageCoord referencePointImage = UsgsAstroFrameSensorModel::groundToImage(referencePointGround);
+  time_t ephemTime = UsgsAstroFrameSensorModel::getImageTime(referencePointImage);
+  struct tm t = {0};  // Initalize to all 0's
+  t.tm_year = 100;  // This is year-1900, so 100 = 2000
+  t.tm_mday = 1;
+  time_t timeSinceEpoch = mktime(&t);
+  time_t finalTime = ephemTime + timeSinceEpoch;
+  char buffer [16];
+  strftime(buffer, 16, "%Y%m%dT%H%M%S", localtime(&finalTime));
+  buffer[15] = '\0';
+
+  return buffer;
 }
 
 
@@ -744,6 +741,7 @@ std::string UsgsAstroFrameSensorModel::getModelState() const {
       {"m_currentParameterCovariance", m_currentParameterCovariance},
       {"m_logFile", m_logFile}
     };
+
     return state.dump();
 }
 
@@ -782,7 +780,7 @@ bool UsgsAstroFrameSensorModel::isValidModelState(const std::string& stringState
     }
   }
 
-  if (!missingKeywords.empty()) {
+  if (!missingKeywords.empty() && warnings) {
     std::ostringstream oss;
     std::copy(missingKeywords.begin(), missingKeywords.end(), std::ostream_iterator<std::string>(oss, " "));
     warnings->push_back(csm::Warning(
@@ -794,7 +792,7 @@ bool UsgsAstroFrameSensorModel::isValidModelState(const std::string& stringState
 
   std::string modelName = jsonState.value<std::string>("m_modelName", "");
 
-  if (modelName != _SENSOR_MODEL_NAME) {
+  if (modelName != _SENSOR_MODEL_NAME && warnings) {
     warnings->push_back(csm::Warning(
       csm::Warning::DATA_NOT_AVAILABLE,
       "Incorrect model name in state, expected " + _SENSOR_MODEL_NAME + " but got " + modelName,
@@ -839,6 +837,7 @@ void UsgsAstroFrameSensorModel::replaceModelState(const std::string& stringState
         m_focalLengthEpsilon = state.at("m_focalLengthEpsilon").get<double>();
         m_nLines = state.at("m_nLines").get<int>();
         m_nSamples = state.at("m_nSamples").get<int>();
+        m_ephemerisTime = state.at("m_ephemerisTime").get<int>();
         m_currentParameterValue = state.at("m_currentParameterValue").get<std::vector<double>>();
         m_ccdCenter = state.at("m_ccdCenter").get<std::vector<double>>();
         m_spacecraftVelocity = state.at("m_spacecraftVelocity").get<std::vector<double>>();
@@ -854,7 +853,7 @@ void UsgsAstroFrameSensorModel::replaceModelState(const std::string& stringState
         m_sensorName = state.at("m_sensorName").get<std::string>();
         m_collectionIdentifier = state.at("m_collectionIdentifier").get<std::string>();
         // Set reference point to the center of the image
-        m_referencePointXyz = imageToGround(csm::ImageCoord(m_nLines / 2.0, m_nSamples / 2.0));
+        m_referencePointXyz = imageToGround(csm::ImageCoord(m_nLines/2.0, m_nSamples/2.0));
         m_currentParameterCovariance = state.at("m_currentParameterCovariance").get<std::vector<double>>();
         m_logFile = state.at("m_logFile").get<std::string>();
         if (m_logFile.empty()) {
@@ -950,8 +949,8 @@ std::string UsgsAstroFrameSensorModel::constructStateFromIsd(const std::string& 
     }
 
     // get optical_distortion
-    state["m_distortionType"] = getDistortionModel(isd);
-    state["m_opticalDistCoeffs"] = getDistortionCoeffs(isd);
+    state["m_distortionType"] = getDistortionModel(isd, warnings);
+    state["m_opticalDistCoeffs"] = getDistortionCoeffs(isd, warnings);
 
     // get detector_center
     state["m_ccdCenter"][0] = getDetectorCenterLine(isd, parsingWarnings);
@@ -1080,6 +1079,8 @@ bool UsgsAstroFrameSensorModel::isParameterShareable(int index) const {
 
 
 csm::SharingCriteria UsgsAstroFrameSensorModel::getParameterSharingCriteria(int index) const {
+   MESSAGE_LOG(this->m_logger, "Checking sharing criteria for parameter {}. "
+               "Sharing is not supported, throwing exception", index);
    // Parameter sharing is not supported for this sensor,
    // all indices are out of range
    throw csm::Error(
@@ -1136,6 +1137,9 @@ int UsgsAstroFrameSensorModel::getNumGeometricCorrectionSwitches() const {
 
 
 std::string UsgsAstroFrameSensorModel::getGeometricCorrectionName(int index) const {
+   MESSAGE_LOG(this->m_logger, "Accessing name of geometric correction switch {}. "
+               "Geometric correction switches are not supported, throwing exception",
+               index);
    // Since there are no geometric corrections, all indices are out of range
    throw csm::Error(
       csm::Error::INDEX_OUT_OF_RANGE,
@@ -1147,6 +1151,10 @@ std::string UsgsAstroFrameSensorModel::getGeometricCorrectionName(int index) con
 void UsgsAstroFrameSensorModel::setGeometricCorrectionSwitch(int index,
                                                       bool value,
                                                       csm::param::Type pType) {
+   MESSAGE_LOG(this->m_logger, "Setting geometric correction switch {} to {} "
+               "with parameter type {}. "
+               "Geometric correction switches are not supported, throwing exception",
+               index, value, pType);
    // Since there are no geometric corrections, all indices are out of range
    throw csm::Error(
       csm::Error::INDEX_OUT_OF_RANGE,
@@ -1156,6 +1164,9 @@ void UsgsAstroFrameSensorModel::setGeometricCorrectionSwitch(int index,
 
 
 bool UsgsAstroFrameSensorModel::getGeometricCorrectionSwitch(int index) const {
+   MESSAGE_LOG(this->m_logger, "Accessing value of geometric correction switch {}. "
+               "Geometric correction switches are not supported, throwing exception",
+               index);
    // Since there are no geometric corrections, all indices are out of range
    throw csm::Error(
       csm::Error::INDEX_OUT_OF_RANGE,
@@ -1180,6 +1191,21 @@ std::vector<double> UsgsAstroFrameSensorModel::getCrossCovarianceMatrix(
 }
 
 
+csm::Ellipsoid UsgsAstroFrameSensorModel::getEllipsoid() const {
+   MESSAGE_LOG(this->m_logger, "Accessing ellipsoid radii {} {}",
+               m_majorAxis, m_minorAxis);
+   return csm::Ellipsoid(m_majorAxis, m_minorAxis);
+}
+
+
+void UsgsAstroFrameSensorModel::setEllipsoid(const csm::Ellipsoid &ellipsoid) {
+   MESSAGE_LOG(this->m_logger, "Setting ellipsoid radii {} {}",
+               ellipsoid.getSemiMajorRadius(), ellipsoid.getSemiMinorRadius());
+   m_majorAxis = ellipsoid.getSemiMajorRadius();
+   m_minorAxis = ellipsoid.getSemiMinorRadius();
+}
+
+
 void UsgsAstroFrameSensorModel::calcRotationMatrix(
     double m[3][3]) const {
   MESSAGE_LOG(this->m_logger, "Calculating rotation matrix");
@@ -1188,6 +1214,12 @@ void UsgsAstroFrameSensorModel::calcRotationMatrix(
   double y = m_currentParameterValue[4];
   double z = m_currentParameterValue[5];
   double w = m_currentParameterValue[6];
+
+  double norm = sqrt(x * x + y * y + z * z + w * w);
+  x /= norm;
+  y /= norm;
+  w /= norm;
+  z /= norm;
 
   m[0][0] = w*w + x*x - y*y - z*z;
   m[0][1] = 2 * (x*y - w*z);
@@ -1291,4 +1323,8 @@ double UsgsAstroFrameSensorModel::getValue(
 
 std::shared_ptr<spdlog::logger> UsgsAstroFrameSensorModel::getLogger() {
   return m_logger;
+}
+
+void UsgsAstroFrameSensorModel::setLogger(std::shared_ptr<spdlog::logger> logger) {
+  m_logger = logger;
 }

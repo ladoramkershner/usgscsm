@@ -78,7 +78,9 @@ public:
    double       m_startingEphemerisTime;
    double       m_centerEphemerisTime;
    double       m_detectorSampleSumming;
-   double       m_startingSample;
+   double       m_detectorLineSumming;
+   double       m_startingDetectorSample;
+   double       m_startingDetectorLine;
    int          m_ikCode;
    double       m_focalLength;
    double       m_zDirection;
@@ -117,6 +119,10 @@ public:
    double       m_halfTime;
    std::vector<double> m_covariance;
    int          m_imageFlipFlag;
+
+   std::vector<double> m_sunPosition;
+   std::vector<double> m_sunVelocity;
+
 
    // Define logging pointer and file content
    std::string m_logFile;
@@ -903,6 +909,15 @@ public:
        const std::vector<double>& adj,
        double attCorr[9]) const;
 
+   virtual csm::EcefVector getSunPosition(
+       const double imageTime) const;
+    //> This method returns the position of the sun at the time the image point
+    //  was recorded.  If multiple sun positions are available, the method uses
+    //  lagrange interpolation.  If one sun position and at least one sun velocity
+    //  are available, then the position is calculated using linear extrapolation.
+    //  If only one sun position is available, then that value is returned.
+
+
 private:
 
    void determineSensorCovarianceInImageSpace(
@@ -1003,15 +1018,6 @@ private:
       double&       z,
       int&          mode ) const;
 
-   // Computes the height above ellipsoid for an input ECF coordinate
-   void computeElevation (
-      const double& x,
-      const double& y,
-      const double& z,
-      double&       height,
-      double&       achieved_precision,
-      const double& desired_precision) const;
-
    // determines the sensor velocity accounting for parameter adjustments.
    void getAdjSensorPosVel(
       const double& time,
@@ -1025,11 +1031,10 @@ private:
 
    // Computes the imaging locus that would view a ground point at a specific
    // time. Computationally, this is the opposite of losToEcf.
-   csm::ImageCoord computeViewingPixel(
+   std::vector<double> computeDetectorView(
       const double& time,   // The time to use the EO at
       const csm::EcefCoord& groundPoint,      // The ground coordinate
-      const std::vector<double>& adj, // Parameter Adjustments for partials
-      const double& desiredPrecision // Desired precision for distortion inversion
+      const std::vector<double>& adj // Parameter Adjustments for partials
    ) const;
 
    // The linear approximation for the sensor model is used as the starting point

@@ -4,14 +4,18 @@
 #include "UsgsAstroPlugin.h"
 #include "UsgsAstroFrameSensorModel.h"
 #include "UsgsAstroLsSensorModel.h"
+#include "UsgsAstroSarSensorModel.h"
 
 #include <json/json.hpp>
 
 #include <map>
 #include <sstream>
+#include <string>
 #include <fstream>
 
 #include <gtest/gtest.h>
+
+#include <spdlog/sinks/ostream_sink.h>
 
 using json = nlohmann::json;
 
@@ -44,6 +48,70 @@ class FrameSensorModel : public ::testing::Test {
          sensorModel = NULL;
 
          isd.setFilename("data/simpleFramerISD.img");
+         UsgsAstroPlugin frameCameraPlugin;
+
+         csm::Model *model = frameCameraPlugin.constructModelFromISD(
+               isd,
+               "USGS_ASTRO_FRAME_SENSOR_MODEL");
+         sensorModel = dynamic_cast<UsgsAstroFrameSensorModel *>(model);
+
+         ASSERT_NE(sensorModel, nullptr);
+      }
+
+      void TearDown() override {
+         if (sensorModel) {
+            delete sensorModel;
+            sensorModel = NULL;
+         }
+      }
+};
+
+class FrameSensorModelLogging : public ::testing::Test {
+   protected:
+      csm::Isd isd;
+      UsgsAstroFrameSensorModel *sensorModel;
+      std::ostringstream oss;
+
+      void SetUp() override {
+         sensorModel = NULL;
+
+         isd.setFilename("data/simpleFramerISD.img");
+         UsgsAstroPlugin frameCameraPlugin;
+
+         csm::Model *model = frameCameraPlugin.constructModelFromISD(
+               isd,
+               "USGS_ASTRO_FRAME_SENSOR_MODEL");
+         sensorModel = dynamic_cast<UsgsAstroFrameSensorModel *>(model);
+
+         ASSERT_NE(sensorModel, nullptr);
+
+         auto ostream_sink = std::make_shared<spdlog::sinks::ostream_sink_mt> (oss);
+         // We need a unique ID for the sensor model so that we don't have
+         // logger name collisions. Use the sensor model's memory addresss.
+         std::uintptr_t sensorId = reinterpret_cast<std::uintptr_t>(sensorModel);
+         auto logger = std::make_shared<spdlog::logger>(std::to_string(sensorId), ostream_sink);
+         sensorModel->setLogger(logger);
+      }
+
+      void TearDown() override {
+         if (sensorModel) {
+            delete sensorModel;
+            sensorModel = NULL;
+         }
+
+         EXPECT_FALSE(oss.str().empty());
+      }
+};
+
+class OrbitalFrameSensorModel : public ::testing::Test {
+   protected:
+      csm::Isd isd;
+      UsgsAstroFrameSensorModel *sensorModel;
+
+      void SetUp() override {
+         sensorModel = NULL;
+
+         isd.setFilename("data/orbitalFramer.img");
          UsgsAstroPlugin frameCameraPlugin;
 
          csm::Model *model = frameCameraPlugin.constructModelFromISD(
@@ -173,33 +241,6 @@ class ConstVelocityLineScanSensorModel : public ::testing::Test {
       }
 };
 
-class ConstAngularVelocityLineScanSensorModel : public ::testing::Test {
-   protected:
-      csm::Isd isd;
-      UsgsAstroLsSensorModel *sensorModel;
-
-      void SetUp() override {
-         sensorModel = NULL;
-
-         isd.setFilename("data/constAngularVelocityLineScan.img");
-         UsgsAstroPlugin cameraPlugin;
-
-         csm::Model *model = cameraPlugin.constructModelFromISD(
-               isd,
-               "USGS_ASTRO_LINE_SCANNER_SENSOR_MODEL");
-         sensorModel = dynamic_cast<UsgsAstroLsSensorModel *>(model);
-
-         ASSERT_NE(sensorModel, nullptr);
-      }
-
-      void TearDown() override {
-         if (sensorModel) {
-            delete sensorModel;
-            sensorModel = NULL;
-         }
-      }
-};
-
 class OrbitalLineScanSensorModel : public ::testing::Test {
    protected:
       csm::Isd isd;
@@ -227,6 +268,81 @@ class OrbitalLineScanSensorModel : public ::testing::Test {
       }
 };
 
+class TwoLineScanSensorModels : public ::testing::Test {
+   protected:
+      csm::Isd isd;
+      UsgsAstroLsSensorModel *sensorModel1;
+      UsgsAstroLsSensorModel *sensorModel2;
 
+      void SetUp() override {
+         sensorModel1 = nullptr;
+         sensorModel2 = nullptr;
+
+         isd.setFilename("data/orbitalLineScan.img");
+         UsgsAstroPlugin cameraPlugin;
+
+         csm::Model *model1 = cameraPlugin.constructModelFromISD(
+               isd,
+               "USGS_ASTRO_LINE_SCANNER_SENSOR_MODEL");
+         sensorModel1 = dynamic_cast<UsgsAstroLsSensorModel *>(model1);
+         csm::Model *model2 = cameraPlugin.constructModelFromISD(
+               isd,
+               "USGS_ASTRO_LINE_SCANNER_SENSOR_MODEL");
+         sensorModel2 = dynamic_cast<UsgsAstroLsSensorModel *>(model2);
+
+         ASSERT_NE(sensorModel1, nullptr);
+         ASSERT_NE(sensorModel2, nullptr);
+      }
+
+      void TearDown() override {
+         if (sensorModel1) {
+            delete sensorModel1;
+            sensorModel1 = nullptr;
+         }
+         if (sensorModel2) {
+            delete sensorModel2;
+            sensorModel2 = nullptr;
+         }
+      }
+};
+
+//////////////////
+// SAR Fixtures //
+//////////////////
+
+class SarIsdTest : public ::testing::Test {
+   protected:
+      csm::Isd isd;
+
+   virtual void SetUp() {
+      isd.setFilename("data/orbitalSar.img");
+   }
+};
+
+class SarSensorModel : public ::testing::Test {
+   protected:
+      csm::Isd isd;
+      UsgsAstroSarSensorModel *sensorModel;
+
+      void SetUp() override {
+         sensorModel = NULL;
+
+         isd.setFilename("data/orbitalSar.img");
+         UsgsAstroPlugin sarCameraPlugin;
+
+         csm::Model *model = sarCameraPlugin.constructModelFromISD(
+               isd,
+               "USGS_ASTRO_SAR_SENSOR_MODEL");
+         sensorModel = dynamic_cast<UsgsAstroSarSensorModel *>(model);
+         ASSERT_NE(sensorModel, nullptr);
+      }
+
+      void TearDown() override {
+         if (sensorModel) {
+            delete sensorModel;
+            sensorModel = NULL;
+         }
+      }
+};
 
 #endif

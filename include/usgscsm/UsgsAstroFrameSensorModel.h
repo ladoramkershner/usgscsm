@@ -6,6 +6,7 @@
 #include <iostream>
 #include <vector>
 #include "RasterGM.h"
+#include <SettableEllipsoid.h>
 #include "CorrelationModel.h"
 #include "Distortion.h"
 #include "Utilities.h"
@@ -18,7 +19,7 @@
 using json = nlohmann::json;
 
 
-class UsgsAstroFrameSensorModel : public csm::RasterGM {
+class UsgsAstroFrameSensorModel : public csm::RasterGM, virtual public csm::SettableEllipsoid {
   // UsgsAstroFramePlugin needs to access private members
   friend class UsgsAstroFramePlugin;
 
@@ -288,6 +289,16 @@ class UsgsAstroFrameSensorModel : public csm::RasterGM {
       //  If the argument state string is empty, the model remains unchanged.
       //<
 
+      // Implement methods from the SettableEllipsoid class
+
+      virtual csm::Ellipsoid getEllipsoid() const;
+      //> This method returns the planetary ellipsoid.
+      //<
+
+      virtual void setEllipsoid(const csm::Ellipsoid &ellipsoid);
+      //> This method sets the planetary ellipsoid.
+      //<
+
     // IMPLEMENT GEOMETRICMODEL PURE VIRTUALS
     // See GeometricModel.h for documentation
     virtual csm::EcefCoord getReferencePoint() const;
@@ -313,6 +324,16 @@ class UsgsAstroFrameSensorModel : public csm::RasterGM {
         csm::param::Set pSet = csm::param::VALID,
         const GeometricModelList &otherModels = GeometricModelList()) const;
     virtual std::shared_ptr<spdlog::logger> getLogger();
+    virtual void setLogger(std::shared_ptr<spdlog::logger> logger);
+    double getValue(int index, const std::vector<double> &adjustments) const;
+    void calcRotationMatrix(double m[3][3]) const;
+    void calcRotationMatrix(double m[3][3], const std::vector<double> &adjustments) const;
+
+    void losEllipsoidIntersect (double height,double xc,
+                                double yc, double zc,
+                                double xl, double yl,
+                                double zl,
+                                double& x,double& y, double&  z) const;
 
     static const std::string _SENSOR_MODEL_NAME;
 
@@ -373,16 +394,6 @@ class UsgsAstroFrameSensorModel : public csm::RasterGM {
     static const std::string _STATE_KEYWORD[];
 
     csm::NoCorrelationModel _no_corr_model;
-
-    double getValue(int index,const std::vector<double> &adjustments) const;
-    void calcRotationMatrix(double m[3][3]) const;
-    void calcRotationMatrix(double m[3][3], const std::vector<double> &adjustments) const;
-
-    void losEllipsoidIntersect (double height,double xc,
-                                double yc, double zc,
-                                double xl, double yl,
-                                double zl,
-                                double& x,double& y, double&  z) const;
 
 };
 
